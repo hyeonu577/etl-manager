@@ -1,5 +1,5 @@
 from trash_etl import *
-import true_email.self_email as self_email
+from true_email.true_email import self_email as self_email
 from html2text import html2text
 import datetime
 from zoneinfo import ZoneInfo
