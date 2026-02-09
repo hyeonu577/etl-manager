@@ -1,5 +1,5 @@
 from trash_etl import *
-from true_email.true_email import self_email as self_email
+from true_email import true_email
 from html2text import html2text
 import datetime
 from zoneinfo import ZoneInfo
@@ -215,7 +215,7 @@ if __name__ == '__main__':
             if is_checked(body_hash):
                 print('pass')
                 continue
-            self_email(title, body)
+            true_email.self_email(title, body)
             start_time = due_date if due_date is not None else datetime.datetime.now(kst)
             true_calendar.add_event(
                 title=text,
@@ -250,7 +250,7 @@ if __name__ == '__main__':
             body += f'\n요약\n{summary}\n'
             body += f'\n본문\n{html2text(announcement.message)}\n'
             body += f'\n링크: {announcement.html_url}'
-            self_email(title, body)
+            true_email.self_email(title, body)
             short_body = f'{text}\n\n{summary}'
             true_line.send_text(short_body)
             add_todolist(
@@ -274,7 +274,7 @@ if __name__ == '__main__':
             if is_checked(body_hash):
                 print('pass')
                 continue
-            self_email(title, body)
+            true_email.self_email(title, body)
             add_todolist(
                 name=text,
                 description=f'{file.url}',
@@ -302,7 +302,7 @@ if __name__ == '__main__':
             if is_checked(body_hash):
                 print('pass')
                 continue
-            self_email(title, body)
+            true_email.self_email(title, body)
             add_todolist(
                 name=text,
                 description=f'{item.html_url}' if hasattr(item, 'html_url') else '',
