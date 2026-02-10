@@ -5,11 +5,11 @@ import datetime
 from zoneinfo import ZoneInfo
 import xxhash
 import openai
-import true_line
+from true_line import true_line
 import os
 from todoist_api_python.api import TodoistAPI
 import sqlite3
-import true_calendar
+from true_calendar import true_calendar
 from dotenv import load_dotenv
 
 
@@ -310,3 +310,4 @@ if __name__ == '__main__':
                 priority=3
             )
             update_checked_item_list(body_hash, text)
+
