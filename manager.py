@@ -9,6 +9,7 @@ from true_line import true_line
 import os
 from todoist_api_python.api import TodoistAPI
 import sqlite3
+import requests
 from true_calendar import true_calendar
 from dotenv import load_dotenv
 
@@ -311,3 +312,7 @@ if __name__ == '__main__':
             )
             update_checked_item_list(body_hash, text)
 
+    try:
+        requests.get(os.getenv('HEALTHCHECK_ETL_MANAGER'), timeout=10)
+    except requests.RequestException as e:
+        print("Ping failed: %s" % e)
