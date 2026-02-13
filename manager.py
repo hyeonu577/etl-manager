@@ -182,10 +182,15 @@ def get_xxh3_128(string):
 
 
 if __name__ == '__main__':
-    try:
-        requests.get(os.getenv('HEALTHCHECK_ETL_MANAGER') + '/start', timeout=10)
-    except requests.RequestException as e:
-        print("Ping failed: %s" % e)
+    max_retries = 5
+    for attempt in range(5):
+        try:
+            requests.get(os.getenv('HEALTHCHECK_ETL_MANAGER') + '/start', timeout=10)
+            break
+        except requests.RequestException as e:
+            print(f"Ping failed (attempt {attempt}/{max_retries}): {e}")
+            if attempt == max_retries:
+                print("All retry attempts exhausted")
         
     kst = ZoneInfo('Asia/Seoul')
     courses = get_courses()
@@ -317,7 +322,12 @@ if __name__ == '__main__':
             )
             update_checked_item_list(body_hash, text)
 
-    try:
-        requests.get(os.getenv('HEALTHCHECK_ETL_MANAGER'), timeout=10)
-    except requests.RequestException as e:
-        print("Ping failed: %s" % e)
+    max_retries = 5
+    for attempt in range(5):
+        try:
+            requests.get(os.getenv('HEALTHCHECK_ETL_MANAGER'), timeout=10)
+            break
+        except requests.RequestException as e:
+            print(f"Ping failed (attempt {attempt}/{max_retries}): {e}")
+            if attempt == max_retries:
+                print("All retry attempts exhausted")
