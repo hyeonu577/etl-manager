@@ -182,6 +182,11 @@ def get_xxh3_128(string):
 
 
 if __name__ == '__main__':
+    try:
+        requests.get(os.getenv('HEALTHCHECK_ETL_MANAGER') + '/start', timeout=10)
+    except requests.RequestException as e:
+        print("Ping failed: %s" % e)
+        
     kst = ZoneInfo('Asia/Seoul')
     courses = get_courses()
     for course in courses:
