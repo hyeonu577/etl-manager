@@ -10,6 +10,7 @@ import os
 from todoist_api_python.api import TodoistAPI
 import sqlite3
 import requests
+import time
 from true_calendar import true_calendar
 from dotenv import load_dotenv
 
@@ -189,6 +190,7 @@ if __name__ == '__main__':
             break
         except requests.RequestException as e:
             print(f"Ping failed (attempt {attempt}/{max_retries}): {e}")
+            time.sleep(attempt)
             if attempt == max_retries:
                 print("All retry attempts exhausted")
         
@@ -329,5 +331,6 @@ if __name__ == '__main__':
             break
         except requests.RequestException as e:
             print(f"Ping failed (attempt {attempt}/{max_retries}): {e}")
+            time.sleep(attempt)
             if attempt == max_retries:
                 print("All retry attempts exhausted")
