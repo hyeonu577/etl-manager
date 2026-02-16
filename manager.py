@@ -182,17 +182,25 @@ def get_xxh3_128(string):
     return hash_value
 
 
-if __name__ == '__main__':
+def ping_test(url, message=None):
     max_retries = 5
     for attempt in range(1, max_retries + 1):
         try:
-            requests.get(os.getenv('HEALTHCHECK_ETL_MANAGER') + '/start', timeout=10)
-            break
+            if message:
+                requests.post(url, data=message.encode('utf-8'), timeout=10)
+            else:
+                requests.get(url, timeout=10)
+            return True
         except requests.RequestException as e:
             print(f"Ping failed (attempt {attempt}/{max_retries}): {e}")
-            time.sleep(attempt)
-            if attempt == max_retries:
-                print("All retry attempts exhausted")
+            if attempt < max_retries:
+                time.sleep(attempt)
+    print("All retry attempts exhausted")
+    return False
+
+
+if __name__ == '__main__':
+    ping_test(os.getenv('HEALTHCHECK_ETL_MANAGER') + '/start')
         
     kst = ZoneInfo('Asia/Seoul')
     courses = get_courses()
@@ -324,13 +332,5 @@ if __name__ == '__main__':
             )
             update_checked_item_list(body_hash, text)
 
-    max_retries = 5
-    for attempt in range(1, max_retries + 1):
-        try:
-            requests.get(os.getenv('HEALTHCHECK_ETL_MANAGER'), timeout=10)
-            break
-        except requests.RequestException as e:
-            print(f"Ping failed (attempt {attempt}/{max_retries}): {e}")
-            time.sleep(attempt)
-            if attempt == max_retries:
-                print("All retry attempts exhausted")
+    ping_test(os.getenv('HEALTHCHECK_ETL_MANAGER'))
+    
