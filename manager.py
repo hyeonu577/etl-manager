@@ -1,30 +1,31 @@
-from trash_etl import *
-from true_email import true_email
-from html2text import html2text
 import datetime
-from zoneinfo import ZoneInfo
-import xxhash
-import openai
-from true_line import true_line
 import os
-from todoist_api_python.api import TodoistAPI
 import sqlite3
-import requests
 import time
-from true_calendar import true_calendar
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import openai
+import requests
+import xxhash
 from dotenv import load_dotenv
+from html2text import html2text
+from todoist_api_python.api import TodoistAPI
+
+from trash_etl import (
+    get_announcements,
+    get_assignments,
+    get_courses,
+    get_files,
+    get_items,
+    is_available,
+)
+from true_calendar import true_calendar
+from true_email import true_email
+from true_line import true_line
 
 
 load_dotenv()
-
-
-def get_current_path():
-    folder_path = '/python/etl_manager/'
-    folder_exists = os.path.exists(folder_path)
-    if folder_exists:
-        return folder_path
-    else:
-        return ''
 
 
 def add_todolist(name, description, due_date, priority):
@@ -42,7 +43,7 @@ def add_todolist(name, description, due_date, priority):
 
 def get_db_path():
     DB_FILENAME = 'checked_items.db'
-    return f"{get_current_path()}{DB_FILENAME}"
+    return Path(__file__).parent / DB_FILENAME
 
 
 def init_db():
@@ -60,11 +61,9 @@ def init_db():
 
 
 def update_checked_item_list(hash_value, title):
-    init_db()
-    
     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     db_path = get_db_path()
-    
+
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
         try:
@@ -79,14 +78,13 @@ def update_checked_item_list(hash_value, title):
 
 
 def is_checked(hash_value):
-    init_db()
     db_path = get_db_path()
-    
+
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT 1 FROM checked_items WHERE hash_value = ?', (hash_value,))
         result = cursor.fetchone()
-        
+
     return result is not None
 
 
@@ -94,14 +92,13 @@ def get_checked_item_list():
     """
     저장된 모든 아이템 리스트를 반환합니다 (디버깅/확인용).
     """
-    init_db()
     db_path = get_db_path()
-    
+
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
         cursor.execute('SELECT hash_value, title, created_at FROM checked_items')
         rows = cursor.fetchall()
-        
+
     return rows
 
 
@@ -110,13 +107,9 @@ def convert_item_type_into_korean(item_):
         'File': '파일',
         'Assignment': '과제',
         'ExternalTool': '줌/녹강',
-        'Quiz': '퀴즈'
-                 }
-    try:
-        korean_type = type_dict[item_.type]
-        return korean_type
-    except KeyError:
-        return item_.type
+        'Quiz': '퀴즈',
+    }
+    return type_dict.get(item_.type, item_.type)
 
 
 def summarize_announcement(announcement_body):
@@ -139,10 +132,10 @@ def summarize_announcement(announcement_body):
 
 # Examples
 
-**Input**: 
+**Input**:
 "[공지사항 내용]"
 
-**Output**: 
+**Output**:
 1. [첫 번째 문장]
 2. [두 번째 문장]
 3. [세 번째 문장]
@@ -199,9 +192,136 @@ def ping_test(url, message=None):
     return False
 
 
-if __name__ == '__main__':
+def process_assignments(course, kst):
+    assignments = get_assignments(course)
+    for assignment in assignments:
+        text = f'{course.name} {assignment.name}'
+        try:
+            if 'Z' in assignment.due_at:
+                due_date = datetime.datetime.strptime(assignment.due_at, '%Y-%m-%dT%H:%M:%SZ')
+                due_date = due_date.replace(tzinfo=datetime.timezone.utc).astimezone(kst)
+            else:
+                due_date = datetime.datetime.strptime(assignment.due_at, '%Y-%m-%dT%H:%M:%S')
+                due_date = due_date.replace(tzinfo=kst)
+            if due_date < datetime.datetime.now(kst):
+                continue
+        except TypeError:
+            due_date = None
+        title = f'[etl] {text}'
+        body = f'{text}\n'
+        body += f'\n타입: 과제\n'
+        body += f'\n마감: {due_date}\n'
+        body += f'\n링크: {assignment.html_url}'
+        body_hash = get_xxh3_128(body)
+        print(text)
+        if is_checked(body_hash):
+            print('pass')
+            continue
+        true_email.self_email(title, body)
+        start_time = due_date if due_date is not None else datetime.datetime.now(kst)
+        true_calendar.add_event(
+            title=text,
+            description=f'링크: {assignment.html_url}',
+            calendar_name='과제, 강의',
+            start_time=start_time,
+            duration=datetime.timedelta(hours=0),
+            notify_times=[datetime.timedelta(days=-2), datetime.timedelta(days=-1)]
+        )
+        add_todolist(
+            name=f'{text} 일정 검토',
+            description=f'{start_time}에 시작하는 {text} 일정을 캘린더에 추가했습니다.\n링크: {assignment.html_url}',
+            due_date='today',
+            priority=3
+        )
+        update_checked_item_list(body_hash, text)
+
+
+def process_announcements(course, kst):
+    announcements = get_announcements(course)
+    for announcement in announcements:
+        body_hash = f'{announcement.title} separate {html2text(announcement.message)}'
+        body_hash = get_xxh3_128(body_hash)
+        print(announcement.title)
+        if is_checked(body_hash):
+            print('pass')
+            continue
+        text = f'{course.name} {announcement.title}'
+        title = f'[etl] {text}'
+        body = f'{text}\n'
+        body += f'\n타입: 공지\n'
+        summary = summarize_announcement(html2text(announcement.message))
+        body += f'\n요약\n{summary}\n'
+        body += f'\n본문\n{html2text(announcement.message)}\n'
+        body += f'\n링크: {announcement.html_url}'
+        true_email.self_email(title, body)
+        short_body = f'{text}\n\n{summary}'
+        true_line.send_text(short_body)
+        add_todolist(
+            name=text,
+            description=f'{summary}\n\n링크: {announcement.html_url}',
+            due_date='today',
+            priority=3
+        )
+        update_checked_item_list(body_hash, text)
+
+
+def process_files(course, kst):
+    files = get_files(course)
+    for file in files:
+        if file.locked_for_user:
+            continue
+        text = f'{course.name} {file.display_name}'
+        title = f'[etl] {text}'
+        body = f'{text}\n\n타입: 파일\n\n파일명: {file.filename}\n\n링크: {file.url}'
+        body_hash = get_xxh3_128(body)
+        print(text)
+        if is_checked(body_hash):
+            print('pass')
+            continue
+        true_email.self_email(title, body)
+        add_todolist(
+            name=text,
+            description=f'{file.url}',
+            due_date='this Saturday',
+            priority=3
+        )
+        update_checked_item_list(body_hash, text)
+
+
+def process_items(course, kst):
+    items = get_items(course)
+    for item in items:
+        if not is_available(item):
+            continue
+        text = f'{course.name} {item.title}'
+        item_type = convert_item_type_into_korean(item)
+        if item_type in ['과제', '파일']:
+            continue
+        title = f'[etl] {text}'
+        try:
+            body = f'{text}\n\n타입: {item_type}\n\n링크: {item.html_url}'
+        except AttributeError:
+            body = f'{text}\n\n타입: {item_type}'
+        body_hash = get_xxh3_128(body)
+        print(text)
+        if is_checked(body_hash):
+            print('pass')
+            continue
+        true_email.self_email(title, body)
+        add_todolist(
+            name=text,
+            description=f'{item.html_url}' if hasattr(item, 'html_url') else '',
+            due_date='today',
+            priority=3
+        )
+        update_checked_item_list(body_hash, text)
+
+
+def main():
     ping_test(os.getenv('HEALTHCHECK_ETL_MANAGER') + '/start')
-        
+
+    init_db()
+
     kst = ZoneInfo('Asia/Seoul')
     courses = get_courses()
     for course in courses:
@@ -211,126 +331,13 @@ if __name__ == '__main__':
         except AttributeError:
             pass
 
-        # 과제
-        assignments = get_assignments(course)
-        for assignment in assignments:
-            text = f'{course.name} {assignment.name}'
-            try:
-                if 'Z' in assignment.due_at:
-                    due_date = datetime.datetime.strptime(assignment.due_at, '%Y-%m-%dT%H:%M:%SZ')
-                    due_date = due_date.replace(tzinfo=datetime.timezone.utc).astimezone(kst)
-                else:
-                    due_date = datetime.datetime.strptime(assignment.due_at, '%Y-%m-%dT%H:%M:%S')
-                    due_date = due_date.replace(tzinfo=kst)
-                if due_date < datetime.datetime.now(kst):
-                    continue
-            except TypeError:
-                due_date = None
-            title = f'[etl] {text}'
-            body = f'{text}\n'
-            body += f'\n타입: 과제\n'
-            body += f'\n마감: {due_date}\n'
-            body += f'\n링크: {assignment.html_url}'
-            body_hash = get_xxh3_128(body)
-            print(text)
-            if is_checked(body_hash):
-                print('pass')
-                continue
-            true_email.self_email(title, body)
-            start_time = due_date if due_date is not None else datetime.datetime.now(kst)
-            true_calendar.add_event(
-                title=text,
-                description=f'링크: {assignment.html_url}',
-                calendar_name='과제, 강의',
-                start_time=start_time,
-                duration=datetime.timedelta(hours=0),
-                notify_times=[datetime.timedelta(days=-2), datetime.timedelta(days=-1)]
-            )
-            add_todolist(
-                name=f'{text} 일정 검토',
-                description=f'{start_time}에 시작하는 {text} 일정을 캘린더에 추가했습니다.\n링크: {assignment.html_url}',
-                due_date='today',
-                priority=3
-            )
-            update_checked_item_list(body_hash, text)
-
-        # 공지
-        announcements = get_announcements(course)
-        for announcement in announcements:
-            body_hash = f'{announcement.title} separate {html2text(announcement.message)}'
-            body_hash = get_xxh3_128(body_hash)
-            print(announcement.title)
-            if is_checked(body_hash):
-                print('pass')
-                continue
-            text = f'{course.name} {announcement.title}'
-            title = f'[etl] {text}'
-            body = f'{text}\n'
-            body += f'\n타입: 공지\n'
-            summary = summarize_announcement(html2text(announcement.message))
-            body += f'\n요약\n{summary}\n'
-            body += f'\n본문\n{html2text(announcement.message)}\n'
-            body += f'\n링크: {announcement.html_url}'
-            true_email.self_email(title, body)
-            short_body = f'{text}\n\n{summary}'
-            true_line.send_text(short_body)
-            add_todolist(
-                name=text,
-                description=f'{summary}\n\n링크: {announcement.html_url}',
-                due_date='today',
-                priority=3
-            )
-            update_checked_item_list(body_hash, text)
-
-        # 파일
-        files = get_files(course)
-        for file in files:
-            if file.locked_for_user:
-                continue
-            text = f'{course.name} {file.display_name}'
-            title = f'[etl] {text}'
-            body = f'{text}\n\n타입: 파일\n\n파일명: {file.filename}\n\n링크: {file.url}'
-            body_hash = get_xxh3_128(body)
-            print(text)
-            if is_checked(body_hash):
-                print('pass')
-                continue
-            true_email.self_email(title, body)
-            add_todolist(
-                name=text,
-                description=f'{file.url}',
-                due_date='this Saturday',
-                priority=3
-            )
-            update_checked_item_list(body_hash, text)
-
-        # 기타
-        items = get_items(course)
-        for item in items:
-            if not is_available(item):
-                continue
-            text = f'{course.name} {item.title}'
-            item_type = convert_item_type_into_korean(item)
-            if item_type in ['과제', '파일']:
-                continue
-            title = f'[etl] {text}'
-            try:
-                body = f'{text}\n\n타입: {item_type}\n\n링크: {item.html_url}'
-            except AttributeError:
-                body = f'{text}\n\n타입: {item_type}'
-            body_hash = get_xxh3_128(body)
-            print(text)
-            if is_checked(body_hash):
-                print('pass')
-                continue
-            true_email.self_email(title, body)
-            add_todolist(
-                name=text,
-                description=f'{item.html_url}' if hasattr(item, 'html_url') else '',
-                due_date='today',
-                priority=3
-            )
-            update_checked_item_list(body_hash, text)
+        process_assignments(course, kst)
+        process_announcements(course, kst)
+        process_files(course, kst)
+        process_items(course, kst)
 
     ping_test(os.getenv('HEALTHCHECK_ETL_MANAGER'))
-    
+
+
+if __name__ == '__main__':
+    main()
