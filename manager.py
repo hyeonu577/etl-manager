@@ -5,11 +5,13 @@ import time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import httpx
 import openai
 import requests
 import xxhash
 from dotenv import load_dotenv
 from html2text import html2text
+from canvasapi.exceptions import Forbidden, ResourceDoesNotExist, Unauthorized
 from todoist_api_python.api import TodoistAPI
 
 from trash_etl import (
@@ -31,14 +33,28 @@ load_dotenv()
 def add_todolist(name, description, due_date, priority):
     api_token = os.getenv('TODOIST_API_TOKEN')
     api = TodoistAPI(api_token)
-    task = api.add_task(
-        content=name,
-        description=description,
-        due_string=due_date,
-        priority=priority,
-        labels=['eTL']
-    )
-    print(f"작업 생성 성공: {task.content} (ID: {task.id})")
+    max_retries = 5
+    for attempt in range(1, max_retries + 1):
+        try:
+            task = api.add_task(
+                content=name,
+                description=description,
+                due_string=due_date,
+                priority=priority,
+                labels=['eTL']
+            )
+            print(f"작업 생성 성공: {task.content} (ID: {task.id})")
+            return
+        except (httpx.HTTPStatusError, httpx.RequestError) as e:
+            # 5xx(서버 일시 오류)와 네트워크 오류만 재시도하고,
+            # 4xx(잘못된 토큰 등 영구 오류)는 즉시 전파한다.
+            status = getattr(getattr(e, 'response', None), 'status_code', None)
+            if status is not None and status < 500:
+                raise
+            print(f"Todoist 작업 생성 실패 (시도 {attempt}/{max_retries}): {e}")
+            if attempt < max_retries:
+                time.sleep(attempt)
+    raise RuntimeError(f"Todoist 작업 생성 재시도 모두 실패: {name}")
 
 
 def get_db_path():
@@ -331,10 +347,13 @@ def main():
         except AttributeError:
             pass
 
-        process_assignments(course, kst)
-        process_announcements(course, kst)
-        process_files(course, kst)
-        process_items(course, kst)
+        for process in (process_assignments, process_announcements,
+                        process_files, process_items):
+            try:
+                process(course, kst)
+            except (Unauthorized, Forbidden, ResourceDoesNotExist) as e:
+                print(f'{course.name} {process.__name__} 건너뜀: {e}')
+                continue
 
     ping_test(os.getenv('HEALTHCHECK_ETL_MANAGER'))
 
