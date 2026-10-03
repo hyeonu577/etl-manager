@@ -15,11 +15,13 @@ from canvasapi.exceptions import Forbidden, ResourceDoesNotExist, Unauthorized
 from todoist_api_python.api import TodoistAPI
 
 from trash_etl import (
+    LearningXError,
     get_announcements,
     get_assignments,
     get_courses,
     get_files,
     get_items,
+    get_lectures,
     is_available,
 )
 from true_calendar import true_calendar
@@ -208,48 +210,71 @@ def ping_test(url, message=None):
     return False
 
 
+def parse_due_date(due_at, kst):
+    if due_at is None:
+        return None
+    if 'Z' in due_at:
+        due_date = datetime.datetime.strptime(due_at, '%Y-%m-%dT%H:%M:%SZ')
+        return due_date.replace(tzinfo=datetime.timezone.utc).astimezone(kst)
+    due_date = datetime.datetime.strptime(due_at, '%Y-%m-%dT%H:%M:%S')
+    return due_date.replace(tzinfo=kst)
+
+
+def notify_deadline(text, item_type, due_date, url, kst):
+    """
+    마감이 있는 항목(과제, 강의영상)을 메일로 알리고 마감 시각을 캘린더에 등록합니다.
+    """
+    title = f'[etl] {text}'
+    body = f'{text}\n'
+    body += f'\n타입: {item_type}\n'
+    body += f'\n마감: {due_date}\n'
+    body += f'\n링크: {url}'
+    body_hash = get_xxh3_128(body)
+    print(text)
+    if is_checked(body_hash):
+        print('pass')
+        return
+    true_email.self_email(title, body)
+    start_time = due_date if due_date is not None else datetime.datetime.now(kst)
+    true_calendar.add_event(
+        title=text,
+        description=f'링크: {url}',
+        calendar_name='과제, 강의',
+        start_time=start_time,
+        duration=datetime.timedelta(hours=0),
+        notify_times=[datetime.timedelta(days=-2), datetime.timedelta(days=-1)]
+    )
+    add_todolist(
+        name=f'{text} 일정 검토',
+        description=f'{start_time}에 시작하는 {text} 일정을 캘린더에 추가했습니다.\n링크: {url}',
+        due_date='today',
+        priority=3
+    )
+    update_checked_item_list(body_hash, text)
+
+
 def process_assignments(course, kst):
     assignments = get_assignments(course)
     for assignment in assignments:
-        text = f'{course.name} {assignment.name}'
-        try:
-            if 'Z' in assignment.due_at:
-                due_date = datetime.datetime.strptime(assignment.due_at, '%Y-%m-%dT%H:%M:%SZ')
-                due_date = due_date.replace(tzinfo=datetime.timezone.utc).astimezone(kst)
-            else:
-                due_date = datetime.datetime.strptime(assignment.due_at, '%Y-%m-%dT%H:%M:%S')
-                due_date = due_date.replace(tzinfo=kst)
-            if due_date < datetime.datetime.now(kst):
-                continue
-        except TypeError:
-            due_date = None
-        title = f'[etl] {text}'
-        body = f'{text}\n'
-        body += f'\n타입: 과제\n'
-        body += f'\n마감: {due_date}\n'
-        body += f'\n링크: {assignment.html_url}'
-        body_hash = get_xxh3_128(body)
-        print(text)
-        if is_checked(body_hash):
-            print('pass')
+        due_date = parse_due_date(assignment.due_at, kst)
+        if due_date is not None and due_date < datetime.datetime.now(kst):
             continue
-        true_email.self_email(title, body)
-        start_time = due_date if due_date is not None else datetime.datetime.now(kst)
-        true_calendar.add_event(
-            title=text,
-            description=f'링크: {assignment.html_url}',
-            calendar_name='과제, 강의',
-            start_time=start_time,
-            duration=datetime.timedelta(hours=0),
-            notify_times=[datetime.timedelta(days=-2), datetime.timedelta(days=-1)]
-        )
-        add_todolist(
-            name=f'{text} 일정 검토',
-            description=f'{start_time}에 시작하는 {text} 일정을 캘린더에 추가했습니다.\n링크: {assignment.html_url}',
-            due_date='today',
-            priority=3
-        )
-        update_checked_item_list(body_hash, text)
+        notify_deadline(f'{course.name} {assignment.name}', '과제', due_date, assignment.html_url, kst)
+
+
+def get_open_lectures(course, kst):
+    """
+    학습인정기간 마감이 남아 있고 아직 시청하지 않은 강의영상을 반환합니다.
+    """
+    now = datetime.datetime.now(kst)
+    return [lecture for lecture in get_lectures(course)
+            if lecture['due_at'] is not None and lecture['due_at'] >= now and not lecture['completed']]
+
+
+def process_lectures(course, kst):
+    for lecture in get_open_lectures(course, kst):
+        due_date = lecture['due_at'].astimezone(kst)
+        notify_deadline(f'{course.name} {lecture["title"]}', '강의영상', due_date, lecture['html_url'], kst)
 
 
 def process_announcements(course, kst):
@@ -306,6 +331,12 @@ def process_files(course, kst):
 
 def process_items(course, kst):
     items = get_items(course)
+    try:
+        open_lecture_ids = {lecture['module_item_id'] for lecture in get_open_lectures(course, kst)}
+    except LearningXError:
+        # main이 process_lectures를 먼저 실행하므로 이 실패는 거기서 보고된다.
+        # 여기서는 강의영상도 다른 모듈 항목처럼 알린다.
+        open_lecture_ids = set()
     for item in items:
         if not is_available(item):
             continue
@@ -319,6 +350,11 @@ def process_items(course, kst):
         except AttributeError:
             body = f'{text}\n\n타입: {item_type}'
         body_hash = get_xxh3_128(body)
+        if item.id in open_lecture_ids:
+            # 마감은 process_lectures가 알린다. 마감이 지나거나 LearningX 조회가 실패한 실행에서
+            # 모듈 항목으로 다시 알리지 않도록 확인한 항목으로 남겨 둔다.
+            update_checked_item_list(body_hash, text)
+            continue
         print(text)
         if is_checked(body_hash):
             print('pass')
@@ -339,6 +375,7 @@ def main():
     init_db()
 
     kst = ZoneInfo('Asia/Seoul')
+    failures = []
     courses = get_courses()
     for course in courses:
         try:
@@ -347,15 +384,23 @@ def main():
         except AttributeError:
             pass
 
-        for process in (process_assignments, process_announcements,
+        for process in (process_assignments, process_lectures, process_announcements,
                         process_files, process_items):
             try:
                 process(course, kst)
             except (Unauthorized, Forbidden, ResourceDoesNotExist) as e:
                 print(f'{course.name} {process.__name__} 건너뜀: {e}')
                 continue
+            except LearningXError as e:
+                # 강의영상 마감만 놓치고 나머지 알림은 계속 보낸 뒤, 실행을 실패로 보고한다.
+                failure = f'{course.name} {process.__name__} 실패: {e}'
+                print(failure)
+                failures.append(failure)
 
-    ping_test(os.getenv('HEALTHCHECK_ETL_MANAGER'))
+    if failures:
+        ping_test(os.getenv('HEALTHCHECK_ETL_MANAGER') + '/fail', '\n'.join(failures))
+    else:
+        ping_test(os.getenv('HEALTHCHECK_ETL_MANAGER'))
 
 
 if __name__ == '__main__':
