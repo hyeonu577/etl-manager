@@ -353,6 +353,7 @@ def process_items(course, kst):
         if item.id in open_lecture_ids:
             # 마감은 process_lectures가 알린다. 마감이 지나거나 LearningX 조회가 실패한 실행에서
             # 모듈 항목으로 다시 알리지 않도록 확인한 항목으로 남겨 둔다.
+            # Relies on main() running process_lectures first and a failed send aborting the run before this.
             update_checked_item_list(body_hash, text)
             continue
         print(text)
